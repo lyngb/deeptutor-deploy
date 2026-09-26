@@ -1,0 +1,88 @@
+# ============================================================
+# DeepTutor (HKUDS) — Coolify / Docker Compose 部署
+# ============================================================
+# 架构：
+#   init      —— 一次性容器，把运行时配置写进共享数据卷（模型档案 / 登录密码），跑完即退
+#   redis     —— 上游要求的会话协调 sidecar（仅内网）
+#   deeptutor —— 主容器（ghcr.io/hkuds/deeptutor:latest），镜像自带 lark-oapi，飞书通道开箱可用
+#
+# 只暴露 3782（Next.js 前端）。容器内的 Next 代理会把 /api/* 与 /ws/*
+# 转发给同容器的后端 8001，因此**不需要**配置 API base，也**不要**把 8001 暴露到公网
+# （未启用登录时 /api/partners/* 会解析成本地管理员）。
+#
+# 所有密钥由 Coolify 注入，本仓库不含任何 .env / 凭证。
+# ============================================================
+
+services:
+  redis:
+    image: redis:7.4-alpine
+    container_name: deeptutor-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - deeptutor-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ---- 一次性配置初始化 ----
+  init:
+    image: ghcr.io/hkuds/deeptutor:latest
+    container_name: deeptutor-init
+    restart: "no"
+    entrypoint: ["python", "/seed/seed.py"]
+    environment:
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:?需在 Coolify 配置 DEEPSEEK_API_KEY}
+      - DEEPSEEK_BASE_URL=${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      - DEEPSEEK_MODEL=${DEEPSEEK_MODEL:-deepseek-chat}
+      # 设为 true 时才会写入 auth.json（启用登录）。首次部署可留空，
+      # 等飞书通道验证通过后再打开并重新部署。
+      - DEEPTUTOR_AUTH_ENABLED=${DEEPTUTOR_AUTH_ENABLED:-}
+      - DEEPTUTOR_ADMIN_USER=${DEEPTUTOR_ADMIN_USER:-admin}
+      - DEEPTUTOR_ADMIN_PASSWORD=${DEEPTUTOR_ADMIN_PASSWORD:-}
+      # 置 1 时强制重写上述配置文件（默认只在缺失时写入）
+      - DEEPTUTOR_SEED_FORCE=${DEEPTUTOR_SEED_FORCE:-}
+      - TZ=${TZ:-Asia/Shanghai}
+    volumes:
+      - deeptutor-data:/app/data
+      - ./seed:/seed:ro
+
+  # ---- 主服务 ----
+  deeptutor:
+    image: ghcr.io/hkuds/deeptutor:latest
+    container_name: deeptutor
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+      - DEEPTUTOR_WORKSPACE_ROOT=/workspace
+      - DEEPTUTOR_WORKSPACE_ALLOWED_ROOTS=/workspace
+      # Coolify 专用：声明后由 Coolify 自动分配域名并接好反向代理
+      # （服务名 deeptutor → 容器端口 3782）
+      - SERVICE_FQDN_DEEPTUTOR_3782=${SERVICE_FQDN_DEEPTUTOR_3782}
+    volumes:
+      # 全部状态都在这里（设置 / 登录密钥 / 伙伴 / 知识库 / 记忆）——整体持久化，别只挂子树
+      - deeptutor-data:/app/data
+      - deeptutor-workspace:/workspace
+    depends_on:
+      redis:
+        condition: service_healthy
+      init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+volumes:
+  deeptutor-data:
+  deeptutor-redis:
+  deeptutor-workspace:
