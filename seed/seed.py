@@ -145,23 +145,54 @@ def seed_auth() -> None:
     log(f"登录已启用：username={username}（密码为 Coolify 里的 DEEPTUTOR_ADMIN_PASSWORD）")
 
 
+def fix_ownership() -> None:
+    """把数据卷交还给应用运行用户。
+
+    本服务以 root 运行（Docker 新建的命名卷属主是 root:root，而 DeepTutor 镜像里
+    的应用用户是 uid 1000），如果不管，主容器启动时会报“数据目录不可写”并退出。
+    这里在写完配置后统一 chown 给 PUID/PGID（默认 1000:1000）。
+    """
+    if os.geteuid() != 0:
+        log("非 root 运行，跳过 chown")
+        return
+    try:
+        uid = int(env("PUID", "1000") or "1000")
+        gid = int(env("PGID", "1000") or "1000")
+    except ValueError:
+        uid, gid = 1000, 1000
+    changed = 0
+    for root, dirs, files in os.walk(DATA_DIR):
+        for name in [root, *dirs, *files]:
+            path = Path(name) if name is root else Path(root) / name
+            try:
+                os.chown(path, uid, gid)
+                changed += 1
+            except OSError:
+                pass
+    log(f"已把 {changed} 个路径的属主改为 {uid}:{gid}")
+
+
 def main() -> int:
     log(f"数据目录 {DATA_DIR} / 设置目录 {SETTINGS_DIR}")
-    if not DATA_DIR.exists():
-        log(f"!! 数据目录不存在：{DATA_DIR}（卷没挂上？）")
+
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        log(f"!! 无法创建数据目录：{exc}")
         return 1
+
     if not os.access(DATA_DIR, os.W_OK):
-        log(f"!! 数据目录不可写：{DATA_DIR}（卷权限问题，检查 PUID/PGID）")
+        log(f"!! 数据目录不可写：{DATA_DIR}")
         return 1
 
     SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
 
-    catalog_ok = seed_model_catalog()
+    seed_model_catalog()
     seed_auth()
+    fix_ownership()
 
     log("完成")
-    # 模型档案写失败不算致命 —— 让主容器起来，用户可以在 UI 里补
-    return 0 if catalog_ok else 0
+    return 0
 
 
 if __name__ == "__main__":
