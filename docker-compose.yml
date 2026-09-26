@@ -32,6 +32,10 @@ services:
     image: ghcr.io/hkuds/deeptutor:latest
     container_name: deeptutor-init
     restart: "no"
+    # 以 root 跑：Docker 新建的命名卷属主是 root:root，需要在这里写好配置
+    # 再 chown 给应用用户（PUID/PGID，默认 1000），否则主容器会因
+    # “/app/data 不可写”直接退出。
+    user: root
     entrypoint: ["python", "/seed/seed.py"]
     environment:
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:?需在 Coolify 配置 DEEPSEEK_API_KEY}
@@ -44,6 +48,9 @@ services:
       - DEEPTUTOR_ADMIN_PASSWORD=${DEEPTUTOR_ADMIN_PASSWORD:-}
       # 置 1 时强制重写上述配置文件（默认只在缺失时写入）
       - DEEPTUTOR_SEED_FORCE=${DEEPTUTOR_SEED_FORCE:-}
+      # 应用运行用户的 uid/gid（数据卷属主会改成这个）
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
       - TZ=${TZ:-Asia/Shanghai}
     volumes:
       - deeptutor-data:/app/data
