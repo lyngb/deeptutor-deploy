@@ -1,6 +1,6 @@
 # DeepTutor 部署包（港大 HKUDS）
 
-让飞书自建应用 **`003-DeepTutor`**（App ID `cli_aaec033c25b89ce9`）真正跑起来。
+让飞书自建应用 **`003-DeepTutor`** 真正跑起来（App ID 与管理密码由 Coolify 环境变量注入，不写进仓库）。
 
 上游项目：[HKUDS/DeepTutor](https://github.com/HKUDS/DeepTutor)（Apache-2.0）· 官方镜像 `ghcr.io/hkuds/deeptutor:latest`
 
@@ -72,7 +72,7 @@ VPS 148.230.88.192 (Ubuntu 24.04 + Coolify)
      "channels": {
        "feishu": {
          "enabled": true,
-         "app_id": "cli_aaec033c25b89ce9",
+         "app_id": "<003-DeepTutor 的 App ID>",
          "app_secret": "<003 的 App Secret>",
          "domain": "feishu",
          "group_policy": "mention"
