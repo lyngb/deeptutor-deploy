@@ -13,6 +13,20 @@
 # ============================================================
 
 services:
+  # ---- 本地嵌入模型（知识库 / 文档问答需要）----
+  # DeepTutor 的 embedding 适配器里没有 MiniMax（其接口是非 OpenAI 形状），
+  # 而 Ollama 是官方支持的 binding 之一，自建即免 key。
+  # 模型由 seed/seed.py 在启动时按需拉取（已存在则跳过）。
+  ollama:
+    image: ollama/ollama:latest
+    container_name: deeptutor-ollama
+    restart: unless-stopped
+    environment:
+      # 长时间驻留，避免每次知识库操作都重新加载模型
+      - OLLAMA_KEEP_ALIVE=24h
+    volumes:
+      - ollama-models:/root/.ollama
+
   deeptutor:
     build:
       context: .
@@ -32,6 +46,10 @@ services:
       - DEEPTUTOR_ADMIN_USER=${DEEPTUTOR_ADMIN_USER:-admin}
       - DEEPTUTOR_ADMIN_PASSWORD=${DEEPTUTOR_ADMIN_PASSWORD:-}
       - DEEPTUTOR_SEED_FORCE=${DEEPTUTOR_SEED_FORCE:-}
+      # --- 嵌入模型 ---
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://ollama:11434}
+      - EMBED_MODEL=${EMBED_MODEL:-bge-m3}
+      - EMBED_DIMENSIONS=${EMBED_DIMENSIONS:-1024}
       # Coolify 专用：声明后自动分配域名并接好反向代理（服务 deeptutor → 端口 3782）
       - SERVICE_FQDN_DEEPTUTOR_3782=${SERVICE_FQDN_DEEPTUTOR_3782}
     volumes:
@@ -43,8 +61,9 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 180s
+      start_period: 300s
 
 volumes:
   deeptutor-data:
   deeptutor-workspace:
+  ollama-models:
