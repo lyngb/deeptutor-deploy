@@ -26,6 +26,7 @@ from pathlib import Path
 
 DATA_DIR = Path(os.environ.get("DEEPTUTOR_DATA_DIR", "/app/data"))
 SETTINGS_DIR = DATA_DIR / "user" / "settings"
+WORKSPACE_DIR = Path(os.environ.get("DEEPTUTOR_WORKSPACE_ROOT", "/workspace"))
 
 TRUTHY = {"1", "true", "yes", "on"}
 
@@ -146,22 +147,16 @@ def seed_auth() -> None:
 
 
 def fix_ownership() -> None:
-    """把数据卷交还给应用运行用户。
-
-    本服务以 root 运行（Docker 新建的命名卷属主是 root:root，而 DeepTutor 镜像里
-    的应用用户是 uid 1000），如果不管，主容器启动时会报“数据目录不可写”并退出。
-    这里在写完配置后统一 chown 给 PUID/PGID（默认 1000:1000）。
-    """
-    if os.geteuid() != 0:
-        log("非 root 运行，跳过 chown")
-        return
+def target_ids() -> tuple[int, int]:
     try:
-        uid = int(env("PUID", "1000") or "1000")
-        gid = int(env("PGID", "1000") or "1000")
+        return int(env("PUID", "1000") or "1000"), int(env("PGID", "1000") or "1000")
     except ValueError:
-        uid, gid = 1000, 1000
+        return 1000, 1000
+
+
+def chown_tree(base: Path, uid: int, gid: int) -> int:
     changed = 0
-    for root, dirs, files in os.walk(DATA_DIR):
+    for root, dirs, files in os.walk(base):
         for name in [root, *dirs, *files]:
             path = Path(name) if name is root else Path(root) / name
             try:
@@ -169,7 +164,35 @@ def fix_ownership() -> None:
                 changed += 1
             except OSError:
                 pass
-    log(f"已把 {changed} 个路径的属主改为 {uid}:{gid}")
+    return changed
+
+
+def fix_ownership() -> None:
+    """把数据卷与内容工作区交还给应用运行用户。
+
+    Docker 新建的命名卷属主是 root:root，而 DeepTutor 以 uid 1000 运行：
+
+    * `/app/data` 不可写 → entrypoint 会直接报错退出；
+    * `/workspace` 不可写 → 飞书里会收到
+      "The turn failed: The workspace outputs folder is not writable."
+
+    因此两个都要在启动前 chown 给 PUID/PGID（默认 1000:1000）。
+    """
+    if os.geteuid() != 0:
+        log("非 root 运行，跳过 chown")
+        return
+    uid, gid = target_ids()
+
+    changed = chown_tree(DATA_DIR, uid, gid)
+    log(f"数据目录：{changed} 个路径 -> {uid}:{gid}")
+
+    try:
+        (WORKSPACE_DIR / "outputs").mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        log(f"!! 无法创建工作区 outputs：{exc}")
+        return
+    changed = chown_tree(WORKSPACE_DIR, uid, gid)
+    log(f"工作区 {WORKSPACE_DIR}：{changed} 个路径 -> {uid}:{gid}")
 
 
 def main() -> int:
