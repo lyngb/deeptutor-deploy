@@ -146,7 +146,6 @@ def seed_auth() -> None:
     log(f"登录已启用：username={username}（密码为 Coolify 里的 DEEPTUTOR_ADMIN_PASSWORD）")
 
 
-def fix_ownership() -> None:
 def target_ids() -> tuple[int, int]:
     try:
         return int(env("PUID", "1000") or "1000"), int(env("PGID", "1000") or "1000")
