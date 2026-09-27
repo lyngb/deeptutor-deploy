@@ -115,15 +115,24 @@ def seed_auth() -> None:
     if not is_true("DEEPTUTOR_AUTH_ENABLED"):
         log("DEEPTUTOR_AUTH_ENABLED 未开启，保持登录关闭（auth.json 不动）")
         return
-    if path.exists() and not FORCE:
-        log(f"已存在，跳过：{path.name}（要重写请设 DEEPTUTOR_SEED_FORCE=1）")
-        return
 
     username = env("DEEPTUTOR_ADMIN_USER", "admin") or "admin"
     password = env("DEEPTUTOR_ADMIN_PASSWORD")
     if not password:
         log("!! 开启了登录但没给 DEEPTUTOR_ADMIN_PASSWORD，跳过 auth.json")
         return
+
+    # 注意：应用自己的 entrypoint 在首次启动时就会写出一个默认 auth.json
+    # （enabled=false）。所以这里不能「文件存在就跳过」，而要按**目标状态**判断：
+    # 已经 enabled=true 且已有密码哈希时才算已就绪，否则补写。
+    if path.exists() and not FORCE:
+        try:
+            current = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            current = {}
+        if current.get("enabled") and current.get("password_hash"):
+            log(f"登录已处于启用状态，跳过：{path.name}（要重置请设 DEEPTUTOR_SEED_FORCE=1）")
+            return
 
     try:
         import bcrypt
@@ -145,10 +154,7 @@ def seed_auth() -> None:
         "private_login_hosts": [],
     }
     write_json(path, payload)
-    log(
-        f"登录已启用：username={username} "
-        f"cookie_secure={payload['cookie_secure']}"
-    )
+    log(f"登录已启用：username={username} cookie_secure={payload['cookie_secure']}")
 
 
 def target_ids() -> tuple[int, int]:
