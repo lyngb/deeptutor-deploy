@@ -133,17 +133,22 @@ def seed_auth() -> None:
 
     # 字段与 deeptutor/services/config/runtime_settings.py 的
     # DEFAULT_AUTH_SETTINGS / _normalize_auth 对齐。
+    # cookie_secure 默认 false：当前是 http 的 sslip.io 域名，设为 true 浏览器不会回传
+    # 登录 cookie，会直接登不进去。等切到 https 自定义域名后把它设为 true。
     payload = {
         "version": 1,
         "enabled": True,
         "username": username,
         "password_hash": bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode(),
         "token_expire_hours": 168,
-        "cookie_secure": True,
+        "cookie_secure": is_true("DEEPTUTOR_AUTH_COOKIE_SECURE"),
         "private_login_hosts": [],
     }
     write_json(path, payload)
-    log(f"登录已启用：username={username}（密码为 Coolify 里的 DEEPTUTOR_ADMIN_PASSWORD）")
+    log(
+        f"登录已启用：username={username} "
+        f"cookie_secure={payload['cookie_secure']}"
+    )
 
 
 def target_ids() -> tuple[int, int]:
