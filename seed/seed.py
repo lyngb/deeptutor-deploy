@@ -110,6 +110,137 @@ def seed_model_catalog() -> bool:
     return True
 
 
+# ── 嵌入模型（知识库 / 文档问答）─────────────────────────────────
+# DeepTutor 的 embedding 适配器只有 cohere / jina / gemini / ollama /
+# dashscope_native / openai 兼容这几种，没有 MiniMax（其 embedding 接口是非
+# OpenAI 形状：入参 texts+type、返回 vectors）。所以走 Ollama 自建，免 key。
+OLLAMA_BASE = env("OLLAMA_BASE_URL", "http://ollama:11434").rstrip("/")
+EMBED_MODEL = env("EMBED_MODEL", "bge-m3")
+try:
+    EMBED_DIM = int(env("EMBED_DIMENSIONS", "1024") or "1024")
+except ValueError:
+    EMBED_DIM = 1024
+
+
+def ensure_ollama_model(timeout_seconds: int = 900) -> bool:
+    """等 Ollama 起来，并把嵌入模型拉下来（已存在则直接返回）。"""
+    import time
+    import urllib.error
+    import urllib.request
+
+    tags_url = f"{OLLAMA_BASE}/api/tags"
+    pull_url = f"{OLLAMA_BASE}/api/pull"
+
+    deadline = time.time() + timeout_seconds
+    ready = False
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(tags_url, timeout=10) as r:
+                data = json.loads(r.read().decode("utf-8", "replace"))
+            ready = True
+            installed = {m.get("name", "") for m in (data.get("models") or [])}
+            if any(n == EMBED_MODEL or n.startswith(f"{EMBED_MODEL}:") for n in installed):
+                log(f"Ollama 已就绪，嵌入模型 {EMBED_MODEL} 已存在")
+                return True
+            break
+        except Exception:  # noqa: BLE001
+            time.sleep(5)
+
+    if not ready:
+        log(f"!! Ollama 在 {timeout_seconds}s 内没就绪（{OLLAMA_BASE}），跳过嵌入模型")
+        return False
+
+    log(f"开始拉取嵌入模型 {EMBED_MODEL}（首次约 1~2 GB，请耐心等待）")
+    try:
+        # stream=true：一是能打印进度，二是避免长时间无数据导致连接被中间层掐断
+        req = urllib.request.Request(
+            pull_url,
+            data=json.dumps({"name": EMBED_MODEL, "stream": True}).encode(),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        last = ""
+        ok = False
+        with urllib.request.urlopen(req, timeout=timeout_seconds) as r:
+            for raw_line in r:
+                line = raw_line.decode("utf-8", "replace").strip()
+                if not line:
+                    continue
+                try:
+                    evt = json.loads(line)
+                except Exception:  # noqa: BLE001
+                    continue
+                status = str(evt.get("status", ""))
+                if status and status != last and not status.startswith("pulling"):
+                    log(f"  [{status}]")
+                    last = status
+                if evt.get("error"):
+                    log(f"!! 拉取出错：{evt['error']}")
+                    return False
+                if status == "success":
+                    ok = True
+        log(f"拉取结束：{'成功' if ok else '未见 success 标记'}")
+        return ok
+    except Exception as exc:  # noqa: BLE001
+        log(f"!! 拉取 {EMBED_MODEL} 失败：{exc}（知识库暂时不可用）")
+        return False
+
+
+def seed_embedding() -> None:
+    """把 embedding 档案合并进 model_catalog.json。
+
+    与 llm 不同，这里**必须能更新已存在的文件**（知识库是后加的能力），
+    所以读出来合并、只动 services.embedding 一段。
+    """
+    path = SETTINGS_DIR / "model_catalog.json"
+    try:
+        catalog = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except Exception:  # noqa: BLE001
+        catalog = {}
+    if not isinstance(catalog, dict):
+        catalog = {}
+
+    catalog.setdefault("version", 1)
+    catalog.setdefault("connections", [])
+    services = catalog.setdefault("services", {})
+    existing = services.get("embedding") or {}
+
+    if existing.get("active_profile_id") and existing.get("profiles") and not FORCE:
+        log("embedding 已配置，跳过（要重写请设 DEEPTUTOR_SEED_FORCE=1）")
+        return
+
+    profile_id = "ollama-embed"
+    model_id = f"ollama-{EMBED_MODEL}"
+    services["embedding"] = {
+        "active_profile_id": profile_id,
+        "active_model_id": model_id,
+        "profiles": [
+            {
+                "id": profile_id,
+                "name": "Ollama (local)",
+                "provider": "ollama",
+                # 适配器注册表 deeptutor/services/embedding/adapters/__init__.py
+                # 的键名之一；Ollama 适配器会把 base_url 当作完整请求地址。
+                "binding": "ollama",
+                "base_url": f"{OLLAMA_BASE}/api/embed",
+                "api_key": "",
+                "api_version": "",
+                "extra_headers": {},
+                "models": [
+                    {
+                        "id": model_id,
+                        "name": EMBED_MODEL,
+                        "model": EMBED_MODEL,
+                        "dimensions": EMBED_DIM,
+                    }
+                ],
+            }
+        ],
+    }
+    write_json(path, catalog)
+    log(f"嵌入档案：binding=ollama  model={EMBED_MODEL}  dim={EMBED_DIM}  base={OLLAMA_BASE}")
+
+
 def seed_auth() -> None:
     path = SETTINGS_DIR / "auth.json"
     if not is_true("DEEPTUTOR_AUTH_ENABLED"):
@@ -221,6 +352,8 @@ def main() -> int:
     SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
 
     seed_model_catalog()
+    ensure_ollama_model()
+    seed_embedding()
     seed_auth()
     fix_ownership()
 
